@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        gray = core.load_grayscale(args.input, invert=args.invert)
+        gray, valid = core.load_grayscale(args.input, invert=args.invert)
         manifest = core.export_bands(
             gray,
             percentages,
@@ -75,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
             white_bg=args.white_bg,
             source_name=args.input.name,
             invert=args.invert,
+            valid=valid,
         )
     except core.BandingError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -88,6 +89,11 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"{b.index:>4}  {lo_l:>4} - {hi_l:>4}  "
             f"{lo_p:>5.1f} - {hi_p:>5.1f}%  {b.coverage_pct:>7.2f}%  {b.filename}"
+        )
+    if manifest.transparent_pct > 0:
+        print(
+            f"Ignored {manifest.transparent_pct:.2f}% of pixels "
+            "(transparent in source)"
         )
     print(f"Manifest: {args.out_dir / 'manifest.json'}")
     return 0

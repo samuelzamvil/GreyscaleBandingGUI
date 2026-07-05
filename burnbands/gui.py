@@ -77,7 +77,9 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         self.gray_raw: np.ndarray | None = None  # as loaded, never inverted
+        self.valid: np.ndarray | None = None  # False where source was transparent
         self._small_raw: np.ndarray | None = None  # downscaled copy of gray_raw
+        self._small_valid: np.ndarray | None = None
         self.source_path: Path | None = None
         self.overlay_pixmap: QPixmap | None = None
         self.custom_lowers: list[float] = []  # lower bound % per band
@@ -169,12 +171,16 @@ class MainWindow(QMainWindow):
     def gray_full(self) -> np.ndarray | None:
         if self.gray_raw is None:
             return None
-        return 255 - self.gray_raw if self.invert_check.isChecked() else self.gray_raw
+        if self.invert_check.isChecked():
+            return core.apply_invert(self.gray_raw, self.valid)
+        return self.gray_raw
 
     def gray_small(self) -> np.ndarray | None:
         if self._small_raw is None:
             return None
-        return 255 - self._small_raw if self.invert_check.isChecked() else self._small_raw
+        if self.invert_check.isChecked():
+            return core.apply_invert(self._small_raw, self._small_valid)
+        return self._small_raw
 
     def current_percentages(self) -> list[float]:
         if self.even_radio.isChecked():
@@ -255,11 +261,12 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            self.gray_raw = core.load_grayscale(path)
+            self.gray_raw, self.valid = core.load_grayscale(path)
         except core.BandingError as exc:
             QMessageBox.critical(self, "BurnBands", str(exc))
             return
         self._small_raw = downscale(self.gray_raw)
+        self._small_valid = downscale(self.valid.astype(np.uint8)).astype(bool)
         self.source_path = Path(path)
         h, w = self.gray_raw.shape
         self.file_label.setText(f"{self.source_path.name}  ({w}×{h})")
@@ -315,7 +322,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(str(exc))
             return
         self.status_label.setText("")
-        masks = core.band_masks(small, thresholds)
+        masks = core.band_masks(small, thresholds, self._small_valid)
         colors = [self.band_color(i) for i in range(len(masks))]
         overlay = core.make_overlay(small, masks, colors)
         self.overlay_pixmap = array_to_pixmap(overlay)
@@ -359,6 +366,7 @@ class MainWindow(QMainWindow):
                 white_bg=self.white_bg_check.isChecked(),
                 source_name=self.source_path.name if self.source_path else "",
                 invert=self.invert_check.isChecked(),
+                valid=self.valid,
             )
         except core.BandingError as exc:
             QMessageBox.critical(self, "BurnBands", str(exc))

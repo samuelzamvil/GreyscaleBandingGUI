@@ -25,12 +25,18 @@ class BandingError(ValueError):
 # Loading / grayscale conversion
 # --------------------------------------------------------------------------
 
-def load_grayscale(path: str | Path, invert: bool = False) -> np.ndarray:
-    """Load an image (color or grayscale) as a single-channel uint8 array.
+def load_grayscale(
+    path: str | Path, invert: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load an image (color or grayscale) as ``(gray, valid)``.
 
-    Alpha, if present, is flattened onto white before conversion so that
-    transparent regions band as "light" rather than as arbitrary RGB noise.
-    Conversion to "L" uses Pillow's ITU-R 601 luminance weights.
+    ``gray`` is a single-channel uint8 array (ITU-R 601 luminance weights).
+    ``valid`` is a boolean array marking real pixels: source pixels that
+    are mostly transparent (alpha < 128) are invalid — they belong to no
+    band, are excluded from invert, and export as transparent/white. This
+    is a splitting tool, not an editor: transparency means "no material",
+    not "white". Mostly-opaque pixels are flattened onto white before
+    conversion (binary cut, consistent with the no-antialiasing rule).
     """
     try:
         img = Image.open(path)
@@ -42,13 +48,25 @@ def load_grayscale(path: str | Path, invert: bool = False) -> np.ndarray:
         img.mode == "P" and "transparency" in img.info
     ):
         rgba = img.convert("RGBA")
+        valid = np.asarray(rgba)[:, :, 3] >= 128
         background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
         img = Image.alpha_composite(background, rgba)
+    else:
+        valid = np.ones((img.height, img.width), dtype=bool)
 
-    gray = np.asarray(img.convert("L"), dtype=np.uint8)
+    gray = np.asarray(img.convert("L"), dtype=np.uint8).copy()
+    gray[~valid] = 255  # display as blank; never banded regardless
     if invert:
-        gray = 255 - gray
-    return gray
+        gray = apply_invert(gray, valid)
+    return gray, valid
+
+
+def apply_invert(gray: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """Invert luminance of real pixels only; invalid (transparent-source)
+    pixels stay blank white instead of turning black."""
+    out = 255 - gray
+    out[~valid] = 255
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -100,21 +118,29 @@ def validate_breakpoints(percentages: list[float]) -> list[int]:
 # Masks, coverage, overlay
 # --------------------------------------------------------------------------
 
-def band_masks(gray: np.ndarray, thresholds: list[int]) -> list[np.ndarray]:
+def band_masks(
+    gray: np.ndarray,
+    thresholds: list[int],
+    valid: np.ndarray | None = None,
+) -> list[np.ndarray]:
     """Boolean mask per band.
 
     Band i covers ``thresholds[i] <= v < thresholds[i+1]``; the final band
-    is inclusive of its upper bound so 255 is always covered. Every pixel
-    lands in exactly one band.
+    is inclusive of its upper bound so 255 is always covered. Every valid
+    pixel lands in exactly one band; pixels marked invalid (transparent in
+    the source) land in none.
     """
     masks = []
     last = len(thresholds) - 2
     for i in range(last + 1):
         lo, hi = thresholds[i], thresholds[i + 1]
         if i == last:
-            masks.append((gray >= lo) & (gray <= hi))
+            mask = (gray >= lo) & (gray <= hi)
         else:
-            masks.append((gray >= lo) & (gray < hi))
+            mask = (gray >= lo) & (gray < hi)
+        if valid is not None:
+            mask &= valid
+        masks.append(mask)
     return masks
 
 
@@ -163,6 +189,7 @@ class Manifest:
     dpi: int
     invert: bool
     white_bg: bool
+    transparent_pct: float = 0.0  # source pixels excluded as transparent
     bands: list[BandInfo] = field(default_factory=list)
 
     def to_json(self) -> str:
@@ -175,6 +202,7 @@ class Manifest:
                 "dpi": self.dpi,
                 "invert": self.invert,
                 "white_bg": self.white_bg,
+                "transparent_pct": round(self.transparent_pct, 4),
                 "bands": [
                     {
                         "index": b.index,
@@ -208,16 +236,18 @@ def export_bands(
     white_bg: bool = False,
     source_name: str = "",
     invert: bool = False,
+    valid: np.ndarray | None = None,
 ) -> Manifest:
     """Write one PNG per band plus manifest.json into ``out_dir``.
 
     Default output: in-band pixels black, everything else fully transparent
     (binary alpha, hard edges). With ``white_bg``: in-band black on white.
+    Pixels flagged invalid (transparent in the source) appear in no band.
     Every PNG is stamped with the given DPI and shares the source's pixel
     dimensions. Band 0 is the darkest band.
     """
     thresholds = validate_breakpoints(percentages)
-    masks = band_masks(gray, thresholds)
+    masks = band_masks(gray, thresholds, valid)
     cov = coverage(masks)
 
     out_dir = Path(out_dir)
@@ -231,6 +261,9 @@ def export_bands(
         dpi=dpi,
         invert=invert,
         white_bg=white_bg,
+        transparent_pct=(
+            0.0 if valid is None else 100.0 * int((~valid).sum()) / valid.size
+        ),
     )
 
     last = len(masks) - 1

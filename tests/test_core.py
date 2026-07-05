@@ -77,20 +77,49 @@ def test_load_color_and_invert(tmp_path):
     path = tmp_path / "c.png"
     Image.fromarray(rgb).save(path)
 
-    gray = core.load_grayscale(path)
+    gray, valid = core.load_grayscale(path)
     assert gray.shape == (2, 2)
     assert gray[0, 0] == 76  # ITU-R 601 red weight
+    assert valid.all()  # no alpha channel -> every pixel real
 
-    inv = core.load_grayscale(path, invert=True)
+    inv, _ = core.load_grayscale(path, invert=True)
     assert inv[0, 0] == 255 - 76
     assert inv[1, 1] == 255
 
 
-def test_load_flattens_alpha_to_white(tmp_path):
-    rgba = np.zeros((1, 1, 4), dtype=np.uint8)  # fully transparent black
+def test_load_transparency_marked_invalid(tmp_path):
+    """alpha < 128 -> excluded; alpha >= 128 -> flattened onto white."""
+    rgba = np.zeros((1, 3, 4), dtype=np.uint8)
+    rgba[0, 0] = [0, 0, 0, 0]      # fully transparent
+    rgba[0, 1] = [0, 0, 0, 127]    # mostly transparent -> excluded
+    rgba[0, 2] = [0, 0, 0, 128]    # mostly opaque black -> kept, near-black
     path = tmp_path / "a.png"
     Image.fromarray(rgba, "RGBA").save(path)
-    assert core.load_grayscale(path)[0, 0] == 255
+
+    gray, valid = core.load_grayscale(path)
+    assert valid.tolist() == [[False, False, True]]
+    assert gray[0, 0] == 255 and gray[0, 1] == 255  # blank, not banded
+    assert gray[0, 2] < 255
+
+
+def test_invert_keeps_transparent_blank(tmp_path):
+    rgba = np.zeros((1, 2, 4), dtype=np.uint8)
+    rgba[0, 1] = [255, 255, 255, 255]  # opaque white
+    path = tmp_path / "a.png"
+    Image.fromarray(rgba, "RGBA").save(path)
+
+    inv, valid = core.load_grayscale(path, invert=True)
+    assert not valid[0, 0]
+    assert inv[0, 0] == 255  # transparent pixel does NOT become black
+    assert inv[0, 1] == 0    # real white pixel does
+
+
+def test_masks_exclude_invalid_pixels():
+    gray = np.array([[0, 0, 255, 255]], dtype=np.uint8)
+    valid = np.array([[True, False, True, False]])
+    masks = core.band_masks(gray, [0, 128, 255], valid)
+    assert masks[0].tolist() == [[True, False, False, False]]
+    assert masks[1].tolist() == [[False, False, True, False]]
 
 
 # -- export ----------------------------------------------------------------
@@ -138,6 +167,31 @@ def test_filenames_sorted_darkest_first(tmp_path):
     assert names == sorted(names)
     assert names[0] == "band_00_L000-063.png"
     assert names[-1] == "band_03_L191-255.png"
+
+
+def test_export_ignores_transparent_source(tmp_path):
+    rgba = np.zeros((2, 2, 4), dtype=np.uint8)
+    rgba[0, 0] = [0, 0, 0, 255]        # opaque black -> darkest band
+    rgba[1, 1] = [255, 255, 255, 255]  # opaque white -> lightest band
+    src = tmp_path / "src.png"
+    Image.fromarray(rgba, "RGBA").save(src)
+
+    gray, valid = core.load_grayscale(src)
+    out = tmp_path / "out"
+    manifest = core.export_bands(gray, [0, 50, 100], out, valid=valid)
+    assert manifest.transparent_pct == pytest.approx(50.0)
+
+    opaque_total = np.zeros((2, 2), dtype=int)
+    for b in manifest.bands:
+        alpha = np.asarray(Image.open(out / b.filename))[:, :, 3]
+        opaque_total += (alpha == 255).astype(int)
+    # transparent-source pixels are in NO band; real pixels in exactly one
+    assert opaque_total.tolist() == [[1, 0], [0, 1]]
+
+    out_w = tmp_path / "out_white"
+    mw = core.export_bands(gray, [0, 50, 100], out_w, valid=valid, white_bg=True)
+    band0 = np.asarray(Image.open(out_w / mw.bands[0].filename))
+    assert band0.tolist() == [[0, 255], [255, 255]]  # ignored pixels white
 
 
 def test_overlay_shape_and_tint():

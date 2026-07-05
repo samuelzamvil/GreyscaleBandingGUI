@@ -36,7 +36,11 @@ Also runnable as `python -m burnbands.cli` / `python -m burnbands.gui`.
 ## How banding works
 
 1. Input (color or grayscale) is converted to grayscale using luminance
-   weights (ITU-R 601). Images with transparency are flattened onto white.
+   weights (ITU-R 601). Transparent source pixels (alpha < 50%) are
+   **ignored entirely** — this is a splitting tool, not an editor, so
+   transparency means "no material": those pixels land in no band, are
+   untouched by invert, and stay transparent (or white with `--white-bg`)
+   in every output. Mostly-opaque pixels are flattened onto white.
 2. Percentage breakpoints map to 0–255 luminance thresholds. Band *i*
    covers `lower <= value < upper`; the last band includes 255. Every pixel
    lands in exactly one band — no gaps, no overlap, no antialiasing.
