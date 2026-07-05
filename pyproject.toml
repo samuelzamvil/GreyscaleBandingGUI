@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "burnbands"
+version = "0.1.0"
+description = "Split a grayscale image into tonal bands for laser engraving (CLI + GUI)"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "Pillow>=10.0",
+    "PySide6>=6.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+burnbands = "burnbands.cli:main"
+
+[project.gui-scripts]
+burnbands-gui = "burnbands.gui:main"
+
+[tool.setuptools]
+packages = ["burnbands"]
